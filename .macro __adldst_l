@@ -1,0 +1,80 @@
+
+linux-5.13/arch/arm/include/asm/assembler.h
+.macro    __adldst_l, op, reg, sym, tmp, c                                                                   
+  .if   __LINUX_ARM_ARCH__ < 7                                                                                 
+    ldr\c   \tmp, .La\@                                                                                          
+    .subsection 1                                                                                                
+    .align    2                                                                                                  
+  .La\@:  .long   \sym - .Lpc\@                                                                                  
+    .previous                                                                                                    
+  .else                                                                                                        
+    .ifnb   \c                                                                                                   
+    THUMB( ittt    \c      )                                                                                      
+    .endif                                                                                                       
+    movw\c    \tmp, #:lower16:\sym - .Lpc\@ /*将传入参数地址减去当前PC物理地址对应的虚拟地址，计算得到一个偏移量*/                                                                 
+    movt\c    \tmp, #:upper16:\sym - .Lpc\@ /*#:lower16: 的作用是用于获取值的低16位的值*/                                                                         
+  .endif                                                                                                       
+                                                                                                                
+ #ifndef CONFIG_THUMB2_KERNEL                                                                                   
+   .set    .Lpc\@, . + 8     // PC bias                                                                         
+   .ifc    \op, add                                                                                             
+   add\c   \reg, \tmp, pc                                                                                       
+   .else                                                                                                        
+   \op\c   \reg, [pc, \tmp]                                                                                     
+   .endif                                                                                                       
+ #else                                                                                                          
+  .Lb\@:  add\c   \tmp, \tmp, pc /*将当前PC的物理地址加上之前求得的偏移量，那么就可以得到传入参数的实际物理地址*/
+   /*     
+    * In Thumb-2 builds, the PC bias depends on whether we are currently         
+    * emitting into a .arm or a .thumb section. The size of the add opcode       
+    * above will be 2 bytes when emitting in Thumb mode and 4 bytes when         
+    * emitting in ARM mode, so let's use this to account for the bias.           
+    */                                                                           
+   .set    .Lpc\@, . + (. - .Lb\@)   /*定义.Lpc为虚拟地址 即当前PC物理地址对应的虚拟地址值*/                                           
+                                                                                 
+   .ifnc   \op, add                                                              
+   \op\c   \reg, [\tmp]                                                          
+   .endif                                                                        
+ #endif                                                                          
+.endm
+
+该宏定义的用于linux内核mmu未开启阶段时将虚拟地址转换成物理地址
+
+
+ENDPROC(lookup_processor_type)                                                  
+                                                                                 
+ /*                                                                              
+  * Read processor ID register (CP#15, CR0), and look up in the linker-built     
+  * supported processor list.  Note that we can't use the absolute addresses     
+  * for the __proc_info lists since we aren't running with the MMU on            
+  * (and therefore, we are not in the correct address space).  We have to        
+  * calculate the offset.                                                        
+  *                                                                              
+  *  r9 = cpuid                                                                  
+  * Returns:                                                                     
+  *  r3, r4, r6 corrupted                                                        
+  *  r5 = proc_info pointer in physical address space                            
+  *  r9 = cpuid (preserved)                                                      
+  */                                                                             
+ __lookup_processor_type:                                                        
+   /*                                                                            
+    * Look in <asm/procinfo.h> for information about the __proc_info             
+    * structure.                                                                                                    
+    */                                                                           
+   adr_l r5, __proc_info_begin                                                   
+   adr_l r6, __proc_info_end                                                     
+ 1:  ldmia r5, {r3, r4}      @ value, mask                                       
+   and r4, r4, r9      @ mask wanted bits
+   teq r3, r4                                                                    
+   beq 2f                                                                        
+   add r5, r5, #PROC_INFO_SZ   @ sizeof(proc_info_list)                          
+   cmp r5, r6                                                                    
+   blo 1b                                                                        
+   mov r5, #0        @ unknown processor                                         
+ 2:  ret lr                                                                      
+ ENDPROC(__lookup_processor_type)
+ 
+ 从adr_l r5, __proc_info_begin可以得知 r5的值为__proc_info_begin的物理地址。从而实现访问。
+ adr_l为调用__adldst_l的宏定义。
+ 
+
